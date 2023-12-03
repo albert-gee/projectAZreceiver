@@ -4,10 +4,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
-import java.net.DatagramPacket;
-import java.net.DatagramSocket;
-import java.net.InetAddress;
-import java.net.SocketException;
+import java.net.*;
 
 /**
  * A class that receives data from a sender.
@@ -22,10 +19,84 @@ public class Receiver {
      * @param port - the port to listen on.
      * @throws SocketException - if the socket could not be opened.
      */
-    private Receiver(int port) throws SocketException {
+    public Receiver(int port) throws IOException {
         this.datagramSocket = new DatagramSocket(port);
-        logger.info("UDP socket created on port " + port);
+        logger.info("UDP socket created on port " + datagramSocket.getLocalPort());
     }
+
+    /**
+     * Receive a message from a sender.
+     * 1. Wait for a SYN packet from the sender. It contains the initial sequence number and the length of the whole message.
+     * 2. Send a SYN-ACK packet to the sender.
+     * 3. Wait for data packets from the sender. Once a data packet is received, insert it into the message array at the correct position.
+     * 4. Send an ACK packet to the sender for each data packet received.
+     * @param timeout - the timeout for receiving data packets.
+     * @return the received message.
+     * @throws IOException - if an I/O error occurs.
+     */
+    public byte[] receiveMessage(int timeout) throws IOException {
+        this.datagramSocket.setSoTimeout(0); // Wait forever for the SYN packet
+
+        int initialSequenceNumber;
+        int messageLength;
+
+        int senderPort;
+        InetAddress senderAddress;
+
+        // Wait for a SYN packet from the sender
+        while (true) {
+            final DatagramPacket receivedDatagram = receiveDatagram();
+            AZRP synAzrp = AZRP.fromBytes(receivedDatagram.getData());
+
+            // Validate that the AZRP packet in the datagram is a SYN packet
+            if (synAzrp.isValidSyn()) {
+                senderPort = receivedDatagram.getPort();
+                senderAddress = receivedDatagram.getAddress();
+
+                initialSequenceNumber = synAzrp.getSequenceNumber();
+                messageLength = synAzrp.getLength();
+
+                // Send a SYN-ACK packet to the sender
+                final AZRP synAckAzrp = AZRP.generateSynAckPacket(synAzrp);
+                this.sendDatagram(synAckAzrp.toBytes(), senderAddress, senderPort);
+                break;
+            } else {
+                // Drop the packet
+                logger.debug("Invalid packet received while waiting for a SYN packet");
+            }
+        }
+
+        // Wait for data packets from the sender
+        this.datagramSocket.setSoTimeout(timeout); // Set the timeout for receiving data packets
+        int receivedDataLength = 0; // The length of the data received so far
+        final byte[] message = new byte[messageLength]; // The whole message
+
+        while(receivedDataLength < messageLength) {
+            // Receive a data packet from the sender
+            DatagramPacket receiveDatagram = receiveDatagram();
+            // Validate that the AZRP packet in the datagram is an ACK packet with the correct sequence number
+            final AZRP dataAzrp = AZRP.fromBytes(receiveDatagram.getData());
+            if (dataAzrp.isValidData()) {
+
+                // Insert this packet into the message array at the correct position
+                final int dataPosition = dataAzrp.getSequenceNumber() - initialSequenceNumber;
+                System.arraycopy(dataAzrp.getData(), 0, message, dataPosition, dataAzrp.getData().length);
+                receivedDataLength += dataAzrp.getData().length;
+                logger.info("Downloaded: " + receivedDataLength + "/" + messageLength + " bytes");
+
+                // Send an ACK packet to the sender
+                final boolean[] ackFlags = new boolean[]{false, true};
+                AZRP ackAzrp = new AZRP(new byte[0], dataAzrp.getSequenceNumber() + dataAzrp.getData().length, dataAzrp.getLength(), ackFlags);
+                sendDatagram(ackAzrp.toBytes(), senderAddress, senderPort);
+            } else {
+                // Drop the packet
+                logger.error("Invalid packet received while waiting for a data packet");
+            }
+        }
+
+        return message;
+    }
+
 
     /**
      * Receives a UDP datagram.
@@ -36,7 +107,6 @@ public class Receiver {
         byte[] packetBuffer = new byte[AZRP.MAXIMUM_PACKET_SIZE_IN_BYTES];
         DatagramPacket packet = new DatagramPacket(packetBuffer, packetBuffer.length);
         this.datagramSocket.receive(packet);
-        logger.debug("Received a datagram packet from " + packet.getAddress().getHostAddress() + ":" + packet.getPort());
         return packet;
     }
 
@@ -45,94 +115,14 @@ public class Receiver {
      * @param data - the data to be sent.
      * @throws IOException - if an I/O error occurs.
      */
-    private void sendDatagram(byte[] data, InetAddress senderAddress, int senderPort) throws IOException {
+    private void sendDatagram(byte[] data, InetAddress address, int port) throws IOException {
         DatagramPacket packet = new DatagramPacket(
-                data, data.length, senderAddress, senderPort
+                data, data.length, address, port
         );
         datagramSocket.send(packet);
-        logger.debug("Sent a datagram packet to " + packet.getAddress().getHostAddress() + ":" + packet.getPort());
     }
 
-    /**
-     * Listen for a connection from the sender and receives data packets.
-     * @param port - the port to listen on.
-     * @throws IOException - if an I/O error occurs.
-     */
-    public static void listen(int port) throws IOException {
-        Receiver receiver = new Receiver(port);
-
-        receiver.receiveMessage();
-    }
-    
-    /**
-     * Accept a connection from the sender.
-     * Receive a SYN packet from the sender, set the sequence number and the message length, and send a SYN-ACK packet.
-     * @throws IOException - if an I/O error occurs.
-     */
-    private void receiveMessage() throws IOException {
-        logger.info("Waiting for new messages...");
-
-        // 1. Receive a SYN packet from the sender
-        // The first received packet should have the SYN flag set
-        // This packet contains the initial sequence number and the length of the whole message that consists of a few AZRP packets
-        final DatagramPacket synDatagram = receiveDatagram();
-        final AZRP synAzrp = AZRP.fromBytes(synDatagram.getData());
-        // Validate the SYN packet
-        if (!synAzrp.isSYN()) {
-            throw new IOException("Unable to connect to the receiver: Receiver responded with invalid packet type");
-        } else if (!synAzrp.isChecksumValid()) {
-            throw new IOException("Unable to connect to the receiver: The packet is corrupted");
-        }
-
-        // Set the address and port of the server that sent the packet
-        // This is needed for sending acknowledgement packets back to the server
-        final InetAddress senderAddress = InetAddress.getByName(synDatagram.getAddress().getHostAddress());
-        final int senderPort = synDatagram.getPort();
-
-        // The SYN packet contains the initial sequence number and the length of the whole message
-        final int messageInitialSequenceNumber = synAzrp.getSequenceNumber();
-        final int messageLength = synAzrp.getLength();
-        int receivedDataLength = 0; // The length of the data received so far
-        final byte[] message = new byte[messageLength];
-        logger.debug("SYN packet with sequence number " + messageInitialSequenceNumber + " and length " + messageLength);
-
-
-        // 2. Send a SYN-ACK packet back to the sender
-        final boolean[] synAckFlags = new boolean[]{true, true};
-        final AZRP synAckAzrp = new AZRP(new byte[0], messageInitialSequenceNumber, messageLength, synAckFlags);
-        sendDatagram(synAckAzrp.toBytes(), senderAddress, senderPort);
-        logger.debug("Sent a SYN-ACK packet with sequence number " + messageInitialSequenceNumber + " and length " + messageLength);
-
-
-        // 3. Receive a data packet from the sender
-        logger.debug("Waiting for data packets...");
-        while(receivedDataLength < messageLength) {
-            // Receive a data packet from the sender
-            final DatagramPacket datagram = this.receiveDatagram();
-            final AZRP dataAzrp = AZRP.fromBytes(datagram.getData());
-
-            if (dataAzrp.isData() && dataAzrp.isChecksumValid()) {
-                logger.debug("Data packet at sequence number " + dataAzrp.getSequenceNumber() + " with length " + dataAzrp.getLength() + " bytes: " + new String(dataAzrp.getData()));
-
-                // Insert this packet into the message array at the correct position
-                final int dataPosition = dataAzrp.getSequenceNumber() - messageInitialSequenceNumber;
-                System.arraycopy(dataAzrp.getData(), 0, message, dataPosition, dataAzrp.getData().length);
-                receivedDataLength += dataAzrp.getData().length;
-                logger.debug("*** Inserted " + new String(dataAzrp.getData()) + " into the message array at position " + dataPosition);
-                logger.debug("Message: " + new String(message));
-
-                // Send an ACK packet to the sender
-                final boolean[] ackFlags = new boolean[]{false, true};
-                AZRP ackAzrp = new AZRP(new byte[0], dataAzrp.getSequenceNumber(), dataAzrp.getLength(), ackFlags);
-                sendDatagram(ackAzrp.toBytes(), senderAddress, senderPort);
-                logger.debug("Sent acknowledgement with sequence number " + ackAzrp.getSequenceNumber() + " and length " + ackAzrp.getLength());
-
-            } else {
-                logger.debug("   Invalid packet");
-                throw new RuntimeException("Received invalid packet type");
-            }
-        }
-
-        logger.info("Received message: " + new String(message));
+    public void close() {
+        this.datagramSocket.close();
     }
 }

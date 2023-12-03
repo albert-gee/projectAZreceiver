@@ -8,13 +8,25 @@ import static java.lang.System.exit;
 public class Main {
 
     private static final Logger logger = LoggerFactory.getLogger(Main.class);
+    private static final int TIMEOUT_MILLISECONDS = 5000;
 
     public static void main(String[] args) {
         try {
             int port = Integer.parseInt(args[0]);
 
-            // Create a new receiver and start listening
-            Receiver.listen(port);
+            // Create a new receiver and wait for a message
+            Receiver receiver = new Receiver(port);
+            String stringMessage;
+            do {
+                logger.info("Waiting for a new message...");
+
+                // Once a connection with sender is established, receive the message
+                byte[] data = receiver.receiveMessage(TIMEOUT_MILLISECONDS);
+                stringMessage = new String(data);
+                logger.info("Received message: " + stringMessage + "\n");
+            } while (!stringMessage.equals("quit"));
+
+            receiver.close();
 
         } catch (NumberFormatException e) {
             exitWithError("Invalid port number", e);
