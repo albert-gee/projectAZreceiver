@@ -13,25 +13,15 @@ public class Main {
     public static void main(String[] args) {
         try {
             int port = Integer.parseInt(args[0]);
+            String directoryPath = args[1];
 
             // Create a new receiver and wait for a message
-            Receiver receiver = new Receiver(port);
-            String stringMessage;
-            do {
-                logger.info("Waiting for a new message...");
-
-                // Once a connection with sender is established, receive the message
-                byte[] data = receiver.receiveMessage(TIMEOUT_MILLISECONDS);
-                stringMessage = new String(data);
-                logger.info("Received message: " + stringMessage + "\n");
-            } while (!stringMessage.equals("quit"));
-
-            receiver.close();
+            Receiver receiver = new Receiver(directoryPath);
+            receiver.run(port, TIMEOUT_MILLISECONDS);
 
         } catch (NumberFormatException e) {
             exitWithError("Invalid port number", e);
         } catch (Exception e) {
-            e.printStackTrace();
             exitWithError("Error", e);
         }
     }
