@@ -195,15 +195,27 @@ public class DataTransfer {
         if (mimeType != null) {
 
             // Custom mapping for common MIME types
-            Map<String, String> mimeToExtension = new HashMap<>();
-            mimeToExtension.put("text/plain", "txt");
-            mimeToExtension.put("application/pdf", "pdf");
+            Map<String, String> mimeToExtension = getStringStringMap();
+
 
             // Extract the file extension from the MIME type
             String defaultExtension = "textstring"; // Default extension if not found in the mapping
-            this.fileType = mimeToExtension.getOrDefault(mimeType, defaultExtension);
+            this.fileType = mimeToExtension.getOrDefault(mimeType.trim(), defaultExtension);
         } else {
             throw new IOException("The file type could not be determined");
         }
+    }
+
+    private static Map<String, String> getStringStringMap() {
+        Map<String, String> mimeToExtension = new HashMap<>();
+        mimeToExtension.put("text/plain", "txt");
+        mimeToExtension.put("application/pdf", "pdf");
+        mimeToExtension.put("image/jpeg", "jpg");
+        mimeToExtension.put("image/png", "png");
+        mimeToExtension.put("application/json", "json");
+        mimeToExtension.put("application/xml", "xml");
+        mimeToExtension.put("application/msword", "doc");
+        mimeToExtension.put("application/vnd.ms-excel", "xls");
+        return mimeToExtension;
     }
 }
