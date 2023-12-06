@@ -8,6 +8,11 @@ import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetAddress;
 import java.net.SocketException;
+import java.nio.file.FileSystems;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.HashMap;
+import java.util.Map;
 
 public class DataTransfer {
 
@@ -21,7 +26,7 @@ public class DataTransfer {
     private final int readDataTimeOut;
 
     private int initialSequenceNumber;
-    private int messageLength;
+    private int dataLength;
     private String fileType;
 
     private static final Logger logger = LoggerFactory.getLogger(DataTransfer.class);
@@ -33,32 +38,48 @@ public class DataTransfer {
 
     }
 
-    // 1. Accept new data transfer connection from the sender
+    /**
+     * Accepts a connection from the sender:
+     * 1. Receive a SYN packet from the sender
+     * 2. Send a SYN-ACK packet to the sender
+     * @param readDataTimeOut - the timeout for receiving data packets.
+     * @param port - the port to listen on.
+     * @return the data transfer object.
+     * @throws IOException - if an I/O error occurs.
+     */
     public static DataTransfer accept(int readDataTimeOut, int port) throws IOException {
         DataTransfer dataTransfer = new DataTransfer(readDataTimeOut, port);
 
-        AZRP synAzrp = dataTransfer.receiveConnectionRequest();
+        // Receive a SYN packet from the sender
+        AZRP synAzrp = dataTransfer.receiveSyn();
+        // Send a SYN-ACK packet to the sender
         dataTransfer.acknowledgeConnectionRequest(synAzrp);
 
         return dataTransfer;
     }
 
-    private AZRP receiveConnectionRequest() throws IOException {
+    /**
+     * Receives a SYN packet from the sender.
+     * @return the received SYN packet.
+     * @throws IOException - if an I/O error occurs.
+     */
+    private AZRP receiveSyn() throws IOException {
         // Loop and wait for a valid SYN packet from the sender
         this.datagramSocket.setSoTimeout(0); // Wait forever for the SYN packet
         while (true) {
             final DatagramPacket receivedDatagram = receiveDatagram();
             AZRP synAzrp = AZRP.fromBytes(receivedDatagram.getData());
-
             // Validate that the AZRP packet in the datagram is a SYN packet
             if (synAzrp.isValidSyn()) {
                 this.senderPort = receivedDatagram.getPort();
                 this.senderAddress = receivedDatagram.getAddress();
 
                 this.initialSequenceNumber = synAzrp.getSequenceNumber();
-                this.messageLength = synAzrp.getLength();
-                this.fileType = synAzrp.getData().length > 0 ? new String(synAzrp.getData()) : "";
+                this.dataLength = synAzrp.getLength();
 
+                this.setFileType(new String(synAzrp.getData()));
+
+                logger.debug("Received SYN packet from " + senderAddress + ":" + senderPort);
                 return synAzrp;
             } else {
                 // Drop invalid packets
@@ -67,44 +88,72 @@ public class DataTransfer {
         }
     }
 
+    /**
+     * Sends a SYN-ACK packet to the sender.
+     * @param synAzrp - the SYN packet received from the sender.
+     * @throws IOException - if an I/O error occurs.
+     */
     private void acknowledgeConnectionRequest(AZRP synAzrp) throws IOException {
         // Send a SYN-ACK packet to the sender
         final AZRP synAckAzrp = AZRP.generateSynAckPacket(synAzrp);
         this.sendDatagram(synAckAzrp.toBytes());
+        logger.debug("Sent SYN-ACK packet to " + senderAddress + ":" + senderPort);
     }
 
+    /**
+     * After the connection is established, receives the data from the sender.
+     * @return the received data.
+     * @throws IOException - if an I/O error occurs.
+     */
     public byte[] readData() throws IOException {
 
-        // 2. Receive the data packets after the connection is established
-        this.datagramSocket.setSoTimeout(this.readDataTimeOut); // Timeout for data packets is limited
+        this.datagramSocket.setSoTimeout(this.readDataTimeOut); // Timeout for data packets is limited unlike the SYN packet
+
+        final byte[] wholeData = new byte[this.dataLength]; // The whole message
         int receivedDataLength = 0; // The length of the data received so far
-        final byte[] message = new byte[messageLength]; // The whole message
 
-        while(receivedDataLength < messageLength) {
+        while(receivedDataLength < this.dataLength) {
             // Receive a data packet from the sender
-            DatagramPacket receiveDatagram = receiveDatagram();
-            // Validate that the AZRP packet in the datagram is an ACK packet with the correct sequence number
-            final AZRP dataAzrp = AZRP.fromBytes(receiveDatagram.getData());
-            if (dataAzrp.isValidData()) {
+            AZRP dataAzrp = receiveDataAzrp();
 
-                // Insert this packet into the message array at the correct position
+            // If the packet is not null, it's valid. Otherwise, it's invalid and we drop it
+            if (dataAzrp != null) {
+                // Insert this packet into the wholeData array at the correct position
                 final int dataPosition = dataAzrp.getSequenceNumber() - initialSequenceNumber;
-                System.arraycopy(dataAzrp.getData(), 0, message, dataPosition, dataAzrp.getData().length);
+                System.arraycopy(dataAzrp.getData(), 0, wholeData, dataPosition, dataAzrp.getData().length);
                 receivedDataLength += dataAzrp.getData().length;
-                logger.info("Downloaded: " + receivedDataLength + "/" + messageLength + " bytes");
+                logger.info("Downloaded: " + receivedDataLength + "/" + dataLength + " bytes");
 
                 // Send an ACK packet to the sender
                 final boolean[] ackFlags = new boolean[]{false, true};
                 AZRP ackAzrp = new AZRP(new byte[0], dataAzrp.getSequenceNumber() + dataAzrp.getData().length, dataAzrp.getLength(), dataAzrp.getCheckSum(), ackFlags);
                 sendDatagram(ackAzrp.toBytes());
-            } else {
-                // Drop the packet
-                logger.error("Invalid packet received while waiting for a data packet");
             }
         }
 
-        return message;
+        return wholeData;
+    }
 
+    /**
+     * Receives a data AZRP packet from the sender and validates it.
+     * @return the received data packet or null if the packet is invalid.
+     * @throws IOException - if an I/O error occurs.
+     */
+    private AZRP receiveDataAzrp() throws IOException {
+        AZRP dataAzrp = null;
+
+        // Receive a data packet from the sender
+        DatagramPacket receiveDatagram = receiveDatagram();
+        // Validate that the AZRP packet in the datagram is an ACK packet with the correct sequence number
+        AZRP azrp = AZRP.fromBytes(receiveDatagram.getData());
+        if (azrp.isValidData()) {
+            dataAzrp = azrp;
+        } else {
+            // Drop the packet
+            logger.error("Received invalid data packet");
+        }
+
+        return dataAzrp;
     }
 
     /**
@@ -131,12 +180,30 @@ public class DataTransfer {
         datagramSocket.send(packet);
     }
 
-
+    /**
+     * Closes the socket.
+     */
     public void close() {
         this.datagramSocket.close();
     }
 
     public String getFileType() {
         return fileType;
+    }
+
+    public void setFileType(String mimeType) throws IOException {
+        if (mimeType != null) {
+
+            // Custom mapping for common MIME types
+            Map<String, String> mimeToExtension = new HashMap<>();
+            mimeToExtension.put("text/plain", "txt");
+            mimeToExtension.put("application/pdf", "pdf");
+
+            // Extract the file extension from the MIME type
+            String defaultExtension = "textstring"; // Default extension if not found in the mapping
+            this.fileType = mimeToExtension.getOrDefault(mimeType, defaultExtension);
+        } else {
+            throw new IOException("The file type could not be determined");
+        }
     }
 }

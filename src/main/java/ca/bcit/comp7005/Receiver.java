@@ -35,7 +35,7 @@ public class Receiver {
             byte[] data = dataTransfer.readData();
 
             // If the file type is tex, it's a text string
-            if (dataTransfer.getFileType().equals("tex")) {
+            if (dataTransfer.getFileType().equals("textstring")) {
                 logger.info("Received message: " + new String(data) + "\n");
             } else {
                 // If the file type is different, it's a file and we save it
