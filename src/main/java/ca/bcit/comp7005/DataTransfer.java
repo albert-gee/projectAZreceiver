@@ -29,6 +29,10 @@ public class DataTransfer {
     private int dataLength;
     private String fileType;
 
+    // The following properties are used for statistics:
+    private int packetsSent;
+    private int packetsReceived;
+
     private static final Logger logger = LoggerFactory.getLogger(DataTransfer.class);
 
     private DataTransfer(int readDataTimeOut, int port) throws SocketException {
@@ -69,6 +73,7 @@ public class DataTransfer {
         while (true) {
             final DatagramPacket receivedDatagram = receiveDatagram();
             AZRP synAzrp = AZRP.fromBytes(receivedDatagram.getData());
+
             // Validate that the AZRP packet in the datagram is a SYN packet
             if (synAzrp.isValidSyn()) {
                 this.senderPort = receivedDatagram.getPort();
@@ -83,7 +88,7 @@ public class DataTransfer {
                 return synAzrp;
             } else {
                 // Drop invalid packets
-                logger.debug("Invalid packet received while waiting for a SYN packet");
+                logger.debug("Invalid SYN packet received");
             }
         }
     }
@@ -143,11 +148,23 @@ public class DataTransfer {
         AZRP dataAzrp = null;
 
         // Receive a data packet from the sender
-        DatagramPacket receiveDatagram = receiveDatagram();
+        DatagramPacket receivedDatagram = receiveDatagram();
         // Validate that the AZRP packet in the datagram is an ACK packet with the correct sequence number
-        AZRP azrp = AZRP.fromBytes(receiveDatagram.getData());
+        AZRP azrp = AZRP.fromBytes(receivedDatagram.getData());
         if (azrp.isValidData()) {
             dataAzrp = azrp;
+        } else if (azrp.isSYN() && azrp.isValidSyn()) {
+            // Sender sent another SYN packet, so we have to start session again
+            logger.error("Received SYN packet while waiting for data packet. Start session again.");
+
+            this.senderPort = receivedDatagram.getPort();
+            this.senderAddress = receivedDatagram.getAddress();
+            this.initialSequenceNumber = azrp.getSequenceNumber();
+            this.dataLength = azrp.getLength();
+            this.setFileType(new String(azrp.getData()));
+            // Send a SYN-ACK packet to the sender
+            this.acknowledgeConnectionRequest(azrp);
+
         } else {
             // Drop the packet
             logger.error("Received invalid data packet");
@@ -165,6 +182,9 @@ public class DataTransfer {
         byte[] packetBuffer = new byte[AZRP.MAXIMUM_PACKET_SIZE_IN_BYTES];
         DatagramPacket packet = new DatagramPacket(packetBuffer, packetBuffer.length);
         this.datagramSocket.receive(packet);
+
+        this.packetsReceived++;
+
         return packet;
     }
 
@@ -178,6 +198,8 @@ public class DataTransfer {
                 data, data.length, this.senderAddress, this.senderPort
         );
         datagramSocket.send(packet);
+
+        this.packetsSent++;
     }
 
     /**
@@ -196,7 +218,6 @@ public class DataTransfer {
 
             // Custom mapping for common MIME types
             Map<String, String> mimeToExtension = getStringStringMap();
-
 
             // Extract the file extension from the MIME type
             String defaultExtension = "textstring"; // Default extension if not found in the mapping
@@ -217,5 +238,9 @@ public class DataTransfer {
         mimeToExtension.put("application/msword", "doc");
         mimeToExtension.put("application/vnd.ms-excel", "xls");
         return mimeToExtension;
+    }
+
+    public String getStatistics() {
+        return "Packets sent: " + this.packetsSent + "; packets received: " + this.packetsReceived;
     }
 }

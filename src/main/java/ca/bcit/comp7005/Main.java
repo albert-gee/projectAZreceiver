@@ -8,21 +8,23 @@ import static java.lang.System.exit;
 public class Main {
 
     private static final Logger logger = LoggerFactory.getLogger(Main.class);
-    private static final int TIMEOUT_MILLISECONDS = 5000;
+    private static final int TIMEOUT_MILLISECONDS = 50000;
 
     public static void main(String[] args) {
-        try {
-            int port = Integer.parseInt(args[0]);
-            String directoryPath = args[1];
+        int port = Integer.parseInt(args[0]);
+        String directoryPath = args[1];
+        Receiver receiver = new Receiver(directoryPath);
 
-            // Create a new receiver and wait for a message
-            Receiver receiver = new Receiver(directoryPath);
-            receiver.run(port, TIMEOUT_MILLISECONDS);
-
-        } catch (NumberFormatException e) {
-            exitWithError("Invalid port number", e);
-        } catch (Exception e) {
-            exitWithError("Error", e);
+        while (true) {
+            try {
+                receiver.run(port, TIMEOUT_MILLISECONDS);
+            } catch (NumberFormatException e) {
+                exitWithError("Invalid port number", e);
+            } catch (DataTransferRestartException e) {
+                logger.info("Connection restarted");
+            } catch (Exception e) {
+                exitWithError("Error", e);
+            }
         }
     }
 
