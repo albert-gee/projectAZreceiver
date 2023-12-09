@@ -8,23 +8,21 @@ import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetAddress;
 import java.net.SocketException;
-import java.nio.file.FileSystems;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.Map;
 
+/**
+ * This class describes the data transfer from the sender.
+ */
 public class DataTransfer {
 
     // The socket used to send and receive UDP datagrams
-
     private final DatagramSocket datagramSocket;
-
+    private final int readDataTimeOut;
     private int senderPort;
     private InetAddress senderAddress;
 
-    private final int readDataTimeOut;
-
+    // The following properties are used for data transfer meta-data
     private int initialSequenceNumber;
     private int dataLength;
     private String fileType;
@@ -35,31 +33,24 @@ public class DataTransfer {
 
     private static final Logger logger = LoggerFactory.getLogger(DataTransfer.class);
 
-    private DataTransfer(int readDataTimeOut, int port) throws SocketException {
+    public DataTransfer(int readDataTimeOut, int port) throws SocketException {
         this.readDataTimeOut = readDataTimeOut;
         this.datagramSocket = new DatagramSocket(port);
         logger.info("UDP socket created on port " + datagramSocket.getLocalPort());
-
     }
 
     /**
      * Accepts a connection from the sender:
      * 1. Receive a SYN packet from the sender
      * 2. Send a SYN-ACK packet to the sender
-     * @param readDataTimeOut - the timeout for receiving data packets.
-     * @param port - the port to listen on.
-     * @return the data transfer object.
      * @throws IOException - if an I/O error occurs.
      */
-    public static DataTransfer accept(int readDataTimeOut, int port) throws IOException {
-        DataTransfer dataTransfer = new DataTransfer(readDataTimeOut, port);
+    public void accept() throws IOException {
 
         // Receive a SYN packet from the sender
-        AZRP synAzrp = dataTransfer.receiveSyn();
+        AZRP synAzrp = this.receiveSyn();
         // Send a SYN-ACK packet to the sender
-        dataTransfer.acknowledgeConnectionRequest(synAzrp);
-
-        return dataTransfer;
+        this.acknowledgeConnectionRequest(synAzrp);
     }
 
     /**
@@ -88,7 +79,7 @@ public class DataTransfer {
                 return synAzrp;
             } else {
                 // Drop invalid packets
-                logger.debug("Invalid SYN packet received");
+                logger.error("Invalid SYN packet received");
             }
         }
     }

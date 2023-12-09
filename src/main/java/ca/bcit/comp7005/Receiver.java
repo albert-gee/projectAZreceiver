@@ -35,35 +35,52 @@ public class Receiver {
      * @param port - the port to listen on.
      * @param timeout - the timeout for receiving data packets.
      */
-    public void run(int port, int timeout) throws DataTransferRestartException {
+    public void run(int port, int timeout) throws SocketException {
+        logger.info("Receiver started");
+
+        DataTransfer dataTransfer = new DataTransfer(timeout, port);
+
         try {
-            // Accept a SYN packet from the sender and respond with a SYN-ACK packet
-            DataTransfer dataTransfer = DataTransfer.accept(timeout, port);
 
-            // Receive data packets from the sender
-            // If the sender sends another SYN packet, DataTransferRestartException is thrown and the connection is restarted
-            byte[] data = dataTransfer.readData();
+            boolean isRunning = true;
+            while (isRunning) {
+                // Accept a SYN packet from the sender and respond with a SYN-ACK packet
+                dataTransfer.accept();
 
-            // If the file type is tex, it's a text string
-            if (dataTransfer.getFileType().equals("textstring")) {
-                logger.info("Received message: " + new String(data) + "\n");
-            } else {
-                // If the file type is different, it's a file and we save it
-                String filePath = this.directoryPath + "/fileName." + dataTransfer.getFileType(); // Replace with the desired path for the output file
-                Path path = Paths.get(filePath);
-                Files.write(path, data);
-                logger.info("Received file: " + filePath + "\n");
+                // Receive data packets from the sender
+                // If the sender sends another SYN packet, DataTransferRestartException is thrown and the connection is restarted
+                byte[] data = dataTransfer.readData();
+
+                // If the file type is tex, it's a text string
+                if (dataTransfer.getFileType().equals("textstring")) {
+                    String receivedMessage = new String(data);
+                    logger.info("Received message: " + receivedMessage + "\n");
+
+                    if (receivedMessage.equals("quit")) {
+                        isRunning = false;
+                    }
+                } else {
+                    // If the file type is different, it's a file and we save it
+                    DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss");
+                    String timestamp = LocalDateTime.now().format(formatter);
+
+                    String filePath = this.directoryPath + "/" + timestamp + "." + dataTransfer.getFileType(); // Replace with the desired path for the output file
+                    Path path = Paths.get(filePath);
+                    Files.write(path, data);
+                    logger.info("Received file: " + filePath + "\n");
+                }
+
+                this.writeStatistics(dataTransfer.getStatistics());
             }
             dataTransfer.close();
 
-            this.writeStatistics(dataTransfer.getStatistics());
-
-
         } catch (SocketTimeoutException e) {
-            logger.info("Message data was not received");
+            logger.error("Message data was not received");
         } catch (IOException e) {
-            logger.info("Error receiving message: " + e.getMessage());
+            logger.error("Error receiving message: " + e.getMessage());
         }
+
+        logger.info("Receiver stopped");
     }
 
     /**
